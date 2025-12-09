@@ -64,6 +64,7 @@ const char *test_hsts_url_rewrite_congruent(void);
 const char *test_hsts_read_database(void);
 const char *test_parse_netrc(void);
 const char *test_retr_rate(void);
+const char *test_compute_chunk_range(void);
 
 #endif /* TEST_H */
 

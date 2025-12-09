@@ -41,6 +41,8 @@ as that of the covered work.  */
 #include "utils.h"
 #include "exits.h"
 #include "log.h"
+#include "options.h"
+#include "tui.h"
 
 /* 2005-10-25 SMS.
    VMS log files are often VFC record format, not stream, so fputs() can
@@ -317,6 +319,8 @@ get_log_fp (void)
 {
   if (inhibit_logging)
     return NULL;
+  if (opt.tui && tui_is_active())
+    return NULL;
   if (logfp)
     return logfp;
   return stderr;
@@ -325,6 +329,8 @@ get_log_fp (void)
 static FILE *
 get_progress_fp (void)
 {
+  if (opt.tui && tui_is_active())
+      return NULL;
   if (opt.show_progress == true)
       return stderr;
   return get_log_fp();

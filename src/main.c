@@ -35,6 +35,7 @@ as that of the covered work.  */
 #include <string.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdarg.h>
 #if defined(ENABLE_NLS) || defined(WINDOWS)
 # include <locale.h>
 #endif
@@ -65,6 +66,72 @@ as that of the covered work.  */
 #include <quote.h>
 #include "tui.h"
 #include "sha256.h"
+#include <pthread.h>
+
+/* Structure for parallel URL download in TUI mode */
+struct tui_download_ctx {
+  char *url;
+  struct iri *iri;
+  int index;
+  uerr_t result;
+};
+
+// Debug log for main.c TUI
+static void main_tui_debug(const char *fmt, ...) {
+    FILE *f = fopen("/tmp/tui_debug.log", "a");
+    if (!f) return;
+    
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_buf[26];
+    strftime(time_buf, 26, "%Y-%m-%d %H:%M:%S", tm_info);
+    fprintf(f, "[%s] [MAIN] ", time_buf);
+    
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    va_end(args);
+    
+    fprintf(f, "\n");
+    fflush(f);
+    fclose(f);
+}
+
+/* Thread function for downloading a single URL in TUI mode.
+   Each URL is downloaded with a single connection (no multipart)
+   to avoid nested threading complexity. Multiple URLs are downloaded
+   in parallel instead. */
+static void *
+tui_download_thread(void *arg)
+{
+  struct tui_download_ctx *ctx = (struct tui_download_ctx *)arg;
+  char *filename = NULL, *redirected_URL = NULL;
+  int dt = 0, url_err;
+  struct url *url_parsed;
+  
+  main_tui_debug("tui_download_thread started for URL: %s", ctx->url);
+  
+  url_parsed = url_parse(ctx->url, &url_err, ctx->iri, true);
+  
+  if (!url_parsed)
+    {
+      main_tui_debug("tui_download_thread: URL parse failed");
+      ctx->result = URLERROR;
+      return NULL;
+    }
+  
+  main_tui_debug("tui_download_thread: calling retrieve_url");
+  ctx->result = retrieve_url(url_parsed, ctx->url, &filename, &redirected_URL,
+                             NULL, &dt, false, ctx->iri, true);
+  
+  main_tui_debug("tui_download_thread: retrieve_url returned %d", ctx->result);
+  
+  xfree(redirected_URL);
+  xfree(filename);
+  url_free(url_parsed);
+  
+  return NULL;
+}
 
 #ifdef TESTING
 /* Rename the main function so we can have a main() in fuzzing code
@@ -294,6 +361,7 @@ static struct cmdline_option option_data[] =
 #endif
     { "config", 0, OPT_VALUE, "chooseconfig", -1 },
     { "connect-timeout", 0, OPT_VALUE, "connecttimeout", -1 },
+    { "connections", 0, OPT_VALUE, "connections", -1 },
     { "continue", 'c', OPT_BOOLEAN, "continue", -1 },
     { "convert-file-only", 0, OPT_BOOLEAN, "convertfileonly", -1 },
     { "convert-links", 'k', OPT_BOOLEAN, "convertlinks", -1 },
@@ -649,6 +717,8 @@ Logging and input file:\n"),
 
     N_("\
 Download:\n"),
+    N_("\
+       --connections=NUM           use NUM parallel connections\n"),
     N_("\
   -t,  --tries=NUMBER              set number of retries to NUMBER (0 unlimits)\n"),
     N_("\
@@ -1589,6 +1659,10 @@ main (int argc, char **argv)
   if (opt.tui) {
     opt.progress_type = "tui";
     opt.show_progress = true;
+    opt.quiet = true;  // Suppress log output in TUI mode
+    if (opt.connections == 0) {
+        opt.connections = 4;
+    }
   }
 
   if (opt.tui && nurls == 0)
@@ -2146,6 +2220,112 @@ only if outputting to a regular file.\n"));
     load_hsts ();
 #endif
 
+  /* TUI mode: download all URLs in parallel */
+  if (opt.tui && nurls > 0)
+    {
+      main_tui_debug("TUI parallel download: nurls=%d, connections=%d", nurls, opt.connections);
+      main_tui_debug("opt.show_progress=%d, opt.quiet=%d, opt.verbose=%d", opt.show_progress, opt.quiet, opt.verbose);
+      main_tui_debug("opt.progress_type=%s", opt.progress_type ? opt.progress_type : "NULL");
+      
+      int max_parallel = opt.connections > 0 ? opt.connections : 4;
+      pthread_t *threads = xnew_array(pthread_t, max_parallel);
+      struct tui_download_ctx *contexts = xnew_array(struct tui_download_ctx, nurls);
+      int *thread_idx = xnew_array(int, max_parallel);  /* maps thread slot to url index */
+      
+      main_tui_debug("max_parallel=%d", max_parallel);
+      
+      /* Initialize all download contexts */
+      for (i = 0; i < nurls; i++)
+        {
+          char *t = maybe_prepend_scheme(argv[optind + i]);
+          if (!t)
+            t = argv[optind + i];
+          
+          contexts[i].url = xstrdup(t);
+          contexts[i].iri = iri_new();
+          set_uri_encoding(contexts[i].iri, opt.locale, true);
+          contexts[i].index = i;
+          contexts[i].result = RETROK;
+          main_tui_debug("URL %d: %s", i, contexts[i].url);
+        }
+      
+      /* Initialize thread slots */
+      for (int j = 0; j < max_parallel; j++)
+        {
+          threads[j] = 0;
+          thread_idx[j] = -1;
+        }
+      
+      /* Launch downloads: start up to max_parallel threads, then join one before starting next */
+      int next_url = 0;  /* next URL to start */
+      int active_threads = 0;
+      
+      /* Initial batch launch */
+      while (next_url < nurls && active_threads < max_parallel)
+        {
+          int slot = active_threads;
+          thread_idx[slot] = next_url;
+          if (pthread_create(&threads[slot], NULL, tui_download_thread, &contexts[next_url]) == 0)
+            {
+              active_threads++;
+            }
+          else
+            {
+              contexts[next_url].result = RETRERR;
+              inform_exit_status(RETRERR);
+              thread_idx[slot] = -1;
+            }
+          next_url++;
+        }
+      
+      /* Process remaining URLs: wait for a thread to finish, then start a new one */
+      while (next_url < nurls || active_threads > 0)
+        {
+          /* Find and join a completed thread (blocking join on first active slot) */
+          for (int slot = 0; slot < max_parallel; slot++)
+            {
+              if (thread_idx[slot] >= 0)
+                {
+                  pthread_join(threads[slot], NULL);
+                  inform_exit_status(contexts[thread_idx[slot]].result);
+                  thread_idx[slot] = -1;
+                  active_threads--;
+                  
+                  /* Start a new download if there are more URLs */
+                  if (next_url < nurls)
+                    {
+                      thread_idx[slot] = next_url;
+                      if (pthread_create(&threads[slot], NULL, tui_download_thread, &contexts[next_url]) == 0)
+                        {
+                          active_threads++;
+                        }
+                      else
+                        {
+                          contexts[next_url].result = RETRERR;
+                          inform_exit_status(RETRERR);
+                          thread_idx[slot] = -1;
+                        }
+                      next_url++;
+                    }
+                  break;  /* only process one completion per iteration */
+                }
+            }
+        }
+      
+      /* Cleanup */
+      for (i = 0; i < nurls; i++)
+        {
+          xfree(contexts[i].url);
+          iri_free(contexts[i].iri);
+        }
+      xfree(contexts);
+      xfree(threads);
+      xfree(thread_idx);
+      
+      /* Skip the sequential download loop */
+      goto tui_skip_sequential;
+    }
+
   /* Retrieve the URLs from argument list.  */
   for (i = 0; i < nurls; i++, optind++)
     {
@@ -2246,6 +2426,8 @@ only if outputting to a regular file.\n"));
         xfree (t);
     }
 
+tui_skip_sequential:
+
   /* And then from the input file, if any.  */
   if (opt.input_filename)
     {
@@ -2344,6 +2526,10 @@ only if outputting to a regular file.\n"));
                    _("Download quota of %s EXCEEDED!\n"),
                    human_readable (opt.quota, 10, 1));
     }
+
+  /* Wait for TUI completion if TUI mode is active */
+  if (opt.tui && tui_is_active())
+    tui_wait_for_completion();
 
   if (opt.cookies_output)
     save_cookies ();

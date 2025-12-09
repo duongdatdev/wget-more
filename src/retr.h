@@ -78,4 +78,8 @@ void set_local_file (const char **, const char *);
 
 bool input_file_url (const char *);
 
+#ifdef TESTING
+const char *test_compute_chunk_range (void);
+#endif
+
 #endif /* RETR_H */

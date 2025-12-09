@@ -1136,6 +1136,12 @@ cookie_header (struct cookie_jar *jar, const char *host,
      are the same.  */
   count = eliminate_dups (outgoing, count);
 
+  if (count == 0)
+    {
+      xfree (outgoing);
+      goto out;
+    }
+
   /* Sort the array so that best-matching domains come first, and
      that, within one domain, best-matching paths come first. */
   qsort (outgoing, count, sizeof (struct weighed_cookie), goodness_comparator);

@@ -68,6 +68,7 @@ all_tests(void)
 #endif
   mu_run_test (test_parse_netrc);
   mu_run_test (test_retr_rate);
+  mu_run_test (test_compute_chunk_range);
 
   return NULL;
 }

@@ -1,3 +1,6 @@
+#ifndef OPTIONS_H
+#define OPTIONS_H
+
 /* struct options.
    Copyright (C) 1996-2011, 2015, 2018-2024 Free Software Foundation,
    Inc.
@@ -139,6 +142,8 @@ struct options
 
   bool always_rest;             /* Always use REST. */
   wgint start_pos;              /* Start position of a download. */
+  wgint end_pos;                /* End position of a download. */
+  int connections;              /* Number of parallel connections. */
   char *ftp_user;               /* FTP username */
   char *ftp_passwd;             /* FTP password */
   bool netrc;                   /* Whether to read .netrc. */
@@ -351,3 +356,5 @@ struct options
 };
 
 extern struct options opt;
+
+#endif /* OPTIONS_H */

@@ -63,6 +63,33 @@ as that of the covered work.  */
 #include "html-url.h"
 #include "iri.h"
 #include "hsts.h"
+#include <sys/wait.h>
+#include <stdarg.h>
+#include <time.h>
+#ifdef HAVE_PTHREAD_H
+# include <pthread.h>
+#endif
+
+/* Debug logging for TUI mode */
+static void retr_debug(const char *fmt, ...) {
+    FILE *debug_log = fopen("/tmp/tui_debug.log", "a");
+    if (!debug_log) return;
+    
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    fprintf(debug_log, "[%04d-%02d-%02d %02d:%02d:%02d] [RETR] ",
+            tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+            tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+    
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(debug_log, fmt, args);
+    va_end(args);
+    
+    fprintf(debug_log, "\n");
+    fflush(debug_log);
+    fclose(debug_log);
+}
 
 /* Total size of downloaded files.  Used to enforce quota.  */
 wgint total_downloaded_bytes;
@@ -257,6 +284,9 @@ fd_read_body (const char *downloaded_filename, int fd, FILE *out, wgint toread, 
               wgint *qtyread, wgint *qtywritten, double *elapsed, int flags,
               FILE *out2)
 {
+  retr_debug("fd_read_body called: file=%s, toread=%lld, startpos=%lld, show_progress=%d",
+             downloaded_filename ? downloaded_filename : "NULL", (long long)toread, (long long)startpos, opt.show_progress);
+  
   int ret = 0;
   int dlbufsize = MAX (BUFSIZ, 64 * 1024);
   char *dlbuf = xmalloc (dlbufsize);
@@ -861,6 +891,71 @@ calc_rate (wgint bytes, double secs, int *units)
 
 static char *getproxy (struct url *);
 
+static void
+compute_chunk_range (wgint total_size, int index, int connections,
+                     wgint *start, wgint *end)
+{
+  wgint chunk_size = total_size / connections;
+  *start = index * chunk_size;
+  *end = (index == connections - 1) ? (total_size - 1) : (*start + chunk_size - 1);
+}
+
+#ifdef TESTING
+const char *
+test_compute_chunk_range (void)
+{
+  wgint start;
+  wgint end;
+
+  compute_chunk_range (100, 0, 4, &start, &end);
+  if (start != 0 || end != 24)
+    return "chunk_range_first";
+
+  compute_chunk_range (100, 3, 4, &start, &end);
+  if (start != 75 || end != 99)
+    return "chunk_range_last";
+
+  compute_chunk_range (101, 2, 3, &start, &end);
+  if (start != 66 || end != 100)
+    return "chunk_range_uneven";
+
+  return NULL;
+}
+#endif
+
+#ifdef HAVE_PTHREAD_H
+struct http_thread_ctx
+{
+  const struct url *u;
+  struct url *orig_parsed;
+  const char *refurl;
+  struct url *proxy_url;
+  struct iri *iri;
+  wgint start;
+  wgint end;
+  char *part_filename;
+  int status;
+};
+
+static void *
+download_part_thread (void *arg)
+{
+  struct http_thread_ctx *ctx = arg;
+  int dt = 0;
+  char *newloc = NULL;
+  char *local_file = NULL;
+
+  uerr_t res = http_loop (ctx->u, ctx->orig_parsed, &newloc, &local_file,
+                          ctx->refurl, &dt, ctx->proxy_url, ctx->iri, NULL,
+                          ctx->start, ctx->end, ctx->part_filename);
+
+  xfree (newloc);
+  xfree (local_file);
+  ctx->status = (res == RETROK) ? 0 : 1;
+  return NULL;
+}
+#endif
+
 /* Retrieve the given URL.  Decides which loop to call -- HTTP, FTP,
    FTP, proxy, etc.  */
 
@@ -882,6 +977,7 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
   int up_error_code;            /* url parse error code */
   char *local_file = NULL;
   int redirection_count = 0;
+  wgint total_size = 0;
 
   bool method_suspended = false;
   char *saved_body_data = NULL;
@@ -970,8 +1066,151 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
 	    logprintf (LOG_VERBOSE, "URL transformed to HTTPS due to an HSTS policy\n");
 	}
 #endif
+      /* Disable keep-alive for multithreaded downloads to avoid race conditions
+         on shared connection structures. */
+      if (opt.connections > 1)
+        opt.http_keep_alive = false;
+
       result = http_loop (u, orig_parsed, &mynewloc, &local_file, refurl, dt,
-                          proxy_url, iri);
+              proxy_url, iri, &total_size, -1, -1, NULL);
+      
+      retr_debug("http_loop returned: result=%d, local_file=%s, total_size=%lld",
+                 result, local_file ? local_file : "NULL", (long long)total_size);
+
+      bool file_downloaded = false;
+      if (local_file) {
+          struct stat st;
+          if (stat(local_file, &st) == 0 && st.st_size > 0) {
+              file_downloaded = true;
+          }
+      }
+
+      if (opt.connections > 1 && total_size > 0 && result == RETROK && !file_downloaded)
+        {
+          /* Disable DNS cache to avoid race conditions in multithreaded mode */
+          opt.dns_cache = false;
+          retr_debug("Starting multipart download: connections=%d, total_size=%lld, tui=%d", 
+                     opt.connections, (long long)total_size, opt.tui);
+#ifdef HAVE_PTHREAD_H
+          int i;
+          int launched = 0;
+          bool any_failed = false;
+          pthread_t *threads = xnew_array (pthread_t, opt.connections);
+          struct http_thread_ctx *jobs = xnew_array (struct http_thread_ctx, opt.connections);
+
+          if (!local_file)
+            {
+              logprintf (LOG_NOTQUIET, _("Missing local filename for multithreaded download; using single connection.\n"));
+              result = RETRERR;
+              any_failed = true;
+            }
+          else
+            {
+              for (i = 0; i < opt.connections; i++)
+                {
+                  wgint start;
+                  wgint end;
+
+                  compute_chunk_range (total_size, i, opt.connections, &start, &end);
+
+                  jobs[i].u = url_parse(url, NULL, iri, true);
+                  jobs[i].orig_parsed = orig_parsed; // This is read-only mostly
+                  jobs[i].refurl = refurl;
+                  jobs[i].proxy_url = proxy_url ? url_parse(proxy_url->url, NULL, iri, true) : NULL;
+                  jobs[i].iri = iri_dup(iri);
+                  jobs[i].start = start;
+                  jobs[i].end = end;
+                  jobs[i].part_filename = aprintf ("%s.part%d", local_file, i);
+                  jobs[i].status = 1;
+
+                  if (pthread_create (&threads[i], NULL, download_part_thread, &jobs[i]) == 0)
+                    launched++;
+                  else
+                    {
+                      logprintf (LOG_NOTQUIET, _("Failed to start thread %d for %s\n"), i, url);
+                      any_failed = true;
+                    }
+                  
+                  // Small delay to reduce race conditions during thread startup
+                  usleep(10000); 
+                }
+
+              for (i = 0; i < launched; i++)
+                {
+                  /* Use timed join with 5 minute timeout to prevent infinite hangs */
+                  struct timespec timeout;
+                  clock_gettime(CLOCK_REALTIME, &timeout);
+                  timeout.tv_sec += 300;  /* 5 minute timeout per thread */
+                  
+                  int join_result = pthread_timedjoin_np(threads[i], NULL, &timeout);
+                  if (join_result != 0)
+                    {
+                      if (join_result == ETIMEDOUT)
+                        {
+                          logprintf (LOG_NOTQUIET, _("Thread %d timed out for %s\n"), i, url);
+                          pthread_cancel(threads[i]);
+                          pthread_join(threads[i], NULL);
+                        }
+                      any_failed = true;
+                    }
+                  if (jobs[i].status != 0)
+                    any_failed = true;
+                  
+                  // Cleanup thread-specific data
+                  url_free(jobs[i].u);
+                  if (jobs[i].proxy_url) url_free(jobs[i].proxy_url);
+                  iri_free(jobs[i].iri);
+                }
+
+              if (!any_failed)
+                {
+                  FILE *fp_out = fopen (local_file, "wb");
+                  if (fp_out)
+                    {
+                      for (i = 0; i < opt.connections; i++)
+                        {
+                          FILE *fp_in = fopen (jobs[i].part_filename, "rb");
+                          if (fp_in)
+                            {
+                              char buffer[4096];
+                              size_t n;
+                              while ((n = fread (buffer, 1, sizeof (buffer), fp_in)) > 0)
+                                fwrite (buffer, 1, n, fp_out);
+                              fclose (fp_in);
+                            }
+                          else
+                            {
+                              logprintf (LOG_NOTQUIET, _("Failed to open part file %s\n"), jobs[i].part_filename);
+                              any_failed = true;
+                              break;
+                            }
+                        }
+                      fclose (fp_out);
+                    }
+                  else
+                    {
+                      logprintf (LOG_NOTQUIET, _("Failed to open output file %s\n"), local_file);
+                      any_failed = true;
+                    }
+                }
+
+              for (i = 0; i < opt.connections; i++)
+                {
+                  unlink (jobs[i].part_filename);
+                  xfree (jobs[i].part_filename);
+                }
+
+              if (any_failed)
+                result = RETRERR;
+            }
+
+          xfree (threads);
+          xfree (jobs);
+#else
+          logprintf (LOG_NOTQUIET, _("Multithreaded downloads requested, but pthreads are unavailable. Falling back to single connection.\n"));
+          result = RETRERR;
+#endif
+        }
     }
   else if (u->scheme == SCHEME_FTP
 #ifdef HAVE_SSL

@@ -1,4 +1,4 @@
-This is wget.info, produced by makeinfo version 7.1.1 from wget.texi.
+This is wget.info, produced by makeinfo version 7.1 from wget.texi.
 
 This file documents the GNU Wget utility for downloading network data.
 
@@ -400,7 +400,7 @@ File: wget.info,  Node: Logging and Input File Options,  Next: Download Options,
 
 ‘--metalink-index=NUMBER’
      Set the Metalink ‘application/metalink4+xml’ metaurl ordinal
-     NUMBER. From 1 to the total number of "application/metalink4+xml"
+     NUMBER.  From 1 to the total number of "application/metalink4+xml"
      available.  Specify 0 or ‘inf’ to choose the first good one.
      Metaurls, such as those from a ‘--metalink-over-http’, may have
      been sorted by priority key's value; keep this in mind to choose
@@ -5038,59 +5038,59 @@ Concept Index
 
 
 Tag Table:
-Node: Top747
-Node: Overview2076
-Node: Invoking5747
-Node: URL Format6607
-Ref: URL Format-Footnote-19065
-Node: Option Syntax9171
-Node: Basic Startup Options11944
-Node: Logging and Input File Options12800
-Node: Download Options18884
-Node: Directory Options48355
-Node: HTTP Options51200
-Node: HTTPS (SSL/TLS) Options71823
-Node: FTP Options84924
-Node: Recursive Retrieval Options91981
-Node: Recursive Accept/Reject Options102000
-Node: Exit Status106203
-Node: Recursive Download107235
-Node: Following Links110472
-Node: Spanning Hosts111438
-Node: Types of Files113698
-Node: Directory-Based Limits118582
-Node: Relative Links121836
-Node: FTP Links122682
-Node: Time-Stamping123573
-Node: Time-Stamping Usage125245
-Node: HTTP Time-Stamping Internals127116
-Ref: HTTP Time-Stamping Internals-Footnote-1128456
-Node: FTP Time-Stamping Internals128659
-Node: Startup File130145
-Node: Wgetrc Location131080
-Node: Wgetrc Syntax131928
-Node: Wgetrc Commands132693
-Node: Sample Wgetrc149227
-Node: Examples155254
-Node: Simple Usage155615
-Node: Advanced Usage157062
-Node: Very Advanced Usage160873
-Node: Various162409
-Node: Proxies163114
-Node: Distribution166069
-Node: Web Site166413
-Node: Mailing Lists166709
-Node: Internet Relay Chat168445
-Node: Reporting Bugs168740
-Node: Portability171457
-Node: Signals173100
-Node: Appendices173807
-Node: Robot Exclusion174153
-Node: Security Considerations177997
-Node: Contributors179201
-Node: Copying this manual185143
-Node: GNU Free Documentation License185383
-Node: Concept Index210539
+Node: Top745
+Node: Overview2074
+Node: Invoking5745
+Node: URL Format6605
+Ref: URL Format-Footnote-19063
+Node: Option Syntax9169
+Node: Basic Startup Options11942
+Node: Logging and Input File Options12798
+Node: Download Options18883
+Node: Directory Options48354
+Node: HTTP Options51199
+Node: HTTPS (SSL/TLS) Options71822
+Node: FTP Options84923
+Node: Recursive Retrieval Options91980
+Node: Recursive Accept/Reject Options101999
+Node: Exit Status106202
+Node: Recursive Download107234
+Node: Following Links110471
+Node: Spanning Hosts111437
+Node: Types of Files113697
+Node: Directory-Based Limits118581
+Node: Relative Links121835
+Node: FTP Links122681
+Node: Time-Stamping123572
+Node: Time-Stamping Usage125244
+Node: HTTP Time-Stamping Internals127115
+Ref: HTTP Time-Stamping Internals-Footnote-1128455
+Node: FTP Time-Stamping Internals128658
+Node: Startup File130144
+Node: Wgetrc Location131079
+Node: Wgetrc Syntax131927
+Node: Wgetrc Commands132692
+Node: Sample Wgetrc149226
+Node: Examples155253
+Node: Simple Usage155614
+Node: Advanced Usage157061
+Node: Very Advanced Usage160872
+Node: Various162408
+Node: Proxies163113
+Node: Distribution166068
+Node: Web Site166412
+Node: Mailing Lists166708
+Node: Internet Relay Chat168444
+Node: Reporting Bugs168739
+Node: Portability171456
+Node: Signals173099
+Node: Appendices173806
+Node: Robot Exclusion174152
+Node: Security Considerations177996
+Node: Contributors179200
+Node: Copying this manual185142
+Node: GNU Free Documentation License185382
+Node: Concept Index210538
 
 End Tag Table
 

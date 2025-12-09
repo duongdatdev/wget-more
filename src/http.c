@@ -63,9 +63,31 @@ as that of the covered work.  */
 #include "c-strcase.h"
 #include "version.h"
 #include "xstrndup.h"
+#include <stdarg.h>
 #ifdef HAVE_METALINK
 # include "metalink.h"
 #endif
+
+/* Debug logging for HTTP */
+static void http_debug(const char *fmt, ...) {
+    FILE *debug_log = fopen("/tmp/tui_debug.log", "a");
+    if (!debug_log) return;
+    
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    fprintf(debug_log, "[%04d-%02d-%02d %02d:%02d:%02d] [HTTP] ",
+            tm_info->tm_year + 1900, tm_info->tm_mon + 1, tm_info->tm_mday,
+            tm_info->tm_hour, tm_info->tm_min, tm_info->tm_sec);
+    
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(debug_log, fmt, args);
+    va_end(args);
+    
+    fprintf(debug_log, "\n");
+    fflush(debug_log);
+    fclose(debug_log);
+}
 #ifdef ENABLE_XATTR
 #include "xattr.h"
 #endif
@@ -1613,6 +1635,8 @@ struct http_stat
   encoding_t remote_encoding;   /* the encoding of the remote file */
 
   bool temporary;               /* downloading a temporary file */
+
+  wgint end_pos;                /* the end position of the download */
 };
 
 static void
@@ -1922,11 +1946,18 @@ initialize_request (const struct url *u, struct http_stat *hs, int *dt, struct u
         }
       request_set_header (req, "If-Modified-Since", xstrdup (strtime), rel_value);
     }
-  if (hs->restval)
-    request_set_header (req, "Range",
-                        aprintf ("bytes=%s-",
-                                 number_to_static_string (hs->restval)),
-                        rel_value);
+  if (hs->restval || hs->end_pos >= 0)
+    {
+      char *range_str;
+      if (hs->end_pos >= 0)
+        range_str = aprintf ("bytes=%s-%s",
+                             number_to_static_string (hs->restval),
+                             number_to_static_string (hs->end_pos));
+      else
+        range_str = aprintf ("bytes=%s-",
+                             number_to_static_string (hs->restval));
+      request_set_header (req, "Range", range_str, rel_value);
+    }
   SET_USER_AGENT (req);
   request_set_header (req, "Accept", "*/*", rel_none);
 #ifdef HAVE_LIBZ
@@ -4230,8 +4261,12 @@ check_retry_on_http_error (const int statcode)
 uerr_t
 http_loop (const struct url *u, struct url *original_url, char **newloc,
            char **local_file, const char *referer, int *dt, struct url *proxy,
-           struct iri *iri)
+           struct iri *iri, wgint *total_size,
+           wgint start_pos_override, wgint end_pos_override,
+           const char *output_override)
 {
+  http_debug("http_loop called: url=%s, connections=%d, tui=%d", u->url, opt.connections, opt.tui);
+  
   int count;
   bool got_head = false;         /* used for time-stamping and filename detection */
   bool time_came_from_head = false;
@@ -4244,6 +4279,13 @@ http_loop (const struct url *u, struct url *original_url, char **newloc,
   struct stat st;
   bool send_head_first = true;
   bool force_full_retrieve = false;
+  wgint start_pos;
+  wgint end_pos;
+  const char *output_target;
+
+  start_pos = (start_pos_override >= 0) ? start_pos_override : opt.start_pos;
+  end_pos = (end_pos_override >= 0) ? end_pos_override : opt.end_pos;
+  output_target = output_override ? output_override : opt.output_document;
 
   /* If we are writing to a WARC file: always retrieve the whole file. */
   if (opt.warc_filename != NULL)
@@ -4267,11 +4309,12 @@ http_loop (const struct url *u, struct url *original_url, char **newloc,
 
   /* Setup hstat struct. */
   xzero (hstat);
+  hstat.end_pos = end_pos;
   hstat.referer = referer;
 
-  if (opt.output_document)
+  if (output_target)
     {
-      hstat.local_file = xstrdup (opt.output_document);
+      hstat.local_file = xstrdup (output_target);
       got_name = true;
     }
   else if (!opt.content_disposition)
@@ -4298,7 +4341,11 @@ http_loop (const struct url *u, struct url *original_url, char **newloc,
   *dt = 0;
 
   /* Skip preliminary HEAD request if we're not in spider mode.  */
-  if (!opt.spider)
+  if (!opt.spider && opt.connections <= 1)
+    send_head_first = false;
+
+  /* Skip HEAD request for part downloads (when start_pos_override is set) */
+  if (start_pos_override >= 0)
     send_head_first = false;
 
   /* Send preliminary HEAD request if --content-disposition and -c are used
@@ -4383,8 +4430,8 @@ http_loop (const struct url *u, struct url *original_url, char **newloc,
       /* Decide whether or not to restart.  */
       if (force_full_retrieve)
         hstat.restval = hstat.len;
-      else if (opt.start_pos >= 0)
-        hstat.restval = opt.start_pos;
+      else if (start_pos >= 0)
+        hstat.restval = start_pos;
       else if (opt.always_rest
           && got_name
           && stat (hstat.local_file, &st) == 0
@@ -4418,6 +4465,20 @@ http_loop (const struct url *u, struct url *original_url, char **newloc,
 
       /* Try fetching the document, or at least its head.  */
       err = gethttp (u, original_url, &hstat, dt, proxy, iri, count);
+
+      if (total_size && hstat.contlen != -1)
+        *total_size = hstat.contlen;
+
+      /* If this is the initial HEAD request for multi-threaded download
+         (not a part download with specific range), return early so the caller
+         can spawn download threads. Only do this when start_pos_override is -1,
+         indicating this is not a thread downloading a specific part. */
+      if (opt.connections > 1 && total_size && *total_size > 0 && start_pos_override < 0)
+        {
+           http_debug("Early return for multipart: total_size=%lld", (long long)*total_size);
+           ret = RETROK;
+           goto exit;
+        }
 
       /* Time?  */
       tms = datetime_str (time (NULL));

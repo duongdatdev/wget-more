@@ -16,5 +16,9 @@ void tui_progress_update (void *, wgint, double);
 void tui_progress_draw (void *);
 void tui_progress_finish (void *, double);
 void tui_progress_set_params (const char *);
+bool tui_is_active(void);
+void tui_cleanup(void);
+void tui_wait_for_completion(void);
+int tui_get_active_count(void);
 
 #endif /* TUI_H */

@@ -169,6 +169,7 @@ static const struct {
 #ifdef HAVE_LIBZ
   { "compression",      &opt.compression,       cmd_spec_compression },
 #endif
+  { "connections",      &opt.connections,       cmd_number },
   { "connecttimeout",   &opt.connect_timeout,   cmd_time },
   { "contentdisposition", &opt.content_disposition, cmd_boolean },
   { "contentonerror",   &opt.content_on_error,  cmd_boolean },
@@ -198,6 +199,7 @@ static const struct {
 #ifdef HAVE_SSL
   { "egdfile",          &opt.egd_file,          cmd_file },
 #endif
+  { "endpos",           &opt.end_pos,           cmd_bytes },
   { "excludedirectories", &opt.excludes,        cmd_directory_vector },
   { "excludedomains",   &opt.exclude_domains,   cmd_vector },
   { "followftp",        &opt.follow_ftp,        cmd_boolean },
@@ -504,6 +506,8 @@ defaults (void)
 
   /* Use a negative value to mark the absence of --start-pos option */
   opt.start_pos = -1;
+  opt.end_pos = -1;
+  opt.connections = 1;
   opt.show_progress = -1;
   opt.noscroll = false;
 
