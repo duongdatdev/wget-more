@@ -125,7 +125,9 @@ tui.o: tui.c /usr/include/stdc-predef.h wget.h config.h \
  /usr/include/errno.h /usr/include/x86_64-linux-gnu/bits/errno.h \
  /usr/include/linux/errno.h /usr/include/x86_64-linux-gnu/asm/errno.h \
  /usr/include/asm-generic/errno.h /usr/include/asm-generic/errno-base.h \
- /usr/include/x86_64-linux-gnu/bits/types/error_t.h tui.h
+ /usr/include/x86_64-linux-gnu/bits/types/error_t.h tui.h \
+ /usr/include/nettle/md5.h /usr/include/nettle/nettle-types.h \
+ /usr/include/nettle/sha2.h
 /usr/include/stdc-predef.h:
 wget.h:
 config.h:
@@ -305,3 +307,6 @@ iri.h:
 /usr/include/asm-generic/errno-base.h:
 /usr/include/x86_64-linux-gnu/bits/types/error_t.h:
 tui.h:
+/usr/include/nettle/md5.h:
+/usr/include/nettle/nettle-types.h:
+/usr/include/nettle/sha2.h:

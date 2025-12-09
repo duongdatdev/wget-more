@@ -132,8 +132,9 @@ retr.o: retr.c /usr/include/stdc-predef.h wget.h config.h \
  /usr/include/x86_64-linux-gnu/bits/types/__sigval_t.h \
  /usr/include/x86_64-linux-gnu/bits/netdb.h ../lib/arpa/inet.h \
  /usr/include/arpa/inet.h http.h hsts.h connect.h convert.h ptimer.h \
- html-url.h ../lib/sys/wait.h /usr/include/x86_64-linux-gnu/sys/wait.h \
- ../lib/signal.h /usr/include/signal.h \
+ html-url.h tui.h ../lib/sys/wait.h \
+ /usr/include/x86_64-linux-gnu/sys/wait.h ../lib/signal.h \
+ /usr/include/signal.h \
  /usr/include/x86_64-linux-gnu/bits/signum-generic.h \
  /usr/include/x86_64-linux-gnu/bits/signum-arch.h \
  /usr/include/x86_64-linux-gnu/bits/types/sig_atomic_t.h \
@@ -356,6 +357,7 @@ connect.h:
 convert.h:
 ptimer.h:
 html-url.h:
+tui.h:
 ../lib/sys/wait.h:
 /usr/include/x86_64-linux-gnu/sys/wait.h:
 ../lib/signal.h:

@@ -63,6 +63,7 @@ as that of the covered work.  */
 #include "html-url.h"
 #include "iri.h"
 #include "hsts.h"
+#include "tui.h"
 #include <sys/wait.h>
 #include <stdarg.h>
 #include <time.h>
@@ -359,6 +360,12 @@ fd_read_body (const char *downloaded_filename, int fd, FILE *out, wgint toread, 
         filename_progress = downloaded_filename;
       progress = progress_create (filename_progress, start, start + toread);
       progress_interactive = progress_interactive_p (progress);
+      
+      /* Set filepath for checksum calculation in TUI mode */
+      if (opt.tui && progress && downloaded_filename)
+        {
+          tui_progress_set_filepath(progress, downloaded_filename);
+        }
     }
 
   if (opt.limit_rate)

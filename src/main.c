@@ -1681,7 +1681,20 @@ main (int argc, char **argv)
           argv = new_argv;
           nurls += res->count;
           
+          // Store checksum info for later use (global or static variables)
+          // Note: The checksum verification is handled automatically in TUI progress callbacks
+          // The res->checksum_type and res->expected_checksums can be used 
+          // when creating progress bars with tui_progress_create_with_checksum()
+          
           free(res->urls);
+          if (res->expected_checksums) {
+            for (int i = 0; i < res->count; i++) {
+              if (res->expected_checksums[i]) {
+                free(res->expected_checksums[i]);
+              }
+            }
+            free(res->expected_checksums);
+          }
           free(res);
         }
     }

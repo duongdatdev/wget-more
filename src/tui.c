@@ -257,6 +257,7 @@ TuiResult *tui_get_info(void) {
         } else if (ch == 'a') {
             if (count < 10) {
                 mvwprintw(win, 17, 2, "Enter URL: ");
+                wclrtoeol(win);
                 echo();
                 if (has_colors()) wattron(win, COLOR_PAIR(2));
                 wgetnstr(win, input_buf, 1023);
@@ -309,6 +310,8 @@ TuiResult *tui_get_info(void) {
     TuiResult *res = malloc(sizeof(TuiResult));
     res->urls = urls;
     res->count = count;
+    res->checksum_type = TUI_CHECKSUM_NONE;
+    res->expected_checksums = NULL;
     return res;
 }
 
@@ -329,7 +332,13 @@ void *tui_progress_create (const char *f_name, wgint initial, wgint total) {
     bar->current = initial;
     bar->start_time = (double)time(NULL);
     bar->filename = strdup(f_name);
+    bar->filepath = NULL;
     bar->active = true;
+    bar->checksum_type = CHECKSUM_NONE;
+    bar->checksum[0] = '\0';
+    bar->expected_checksum[0] = '\0';
+    bar->checksum_verified = false;
+    bar->checksum_calculated = false;
     
     int slot = -1;
     for (int i = 0; i < bar_count; i++) {
@@ -341,7 +350,8 @@ void *tui_progress_create (const char *f_name, wgint initial, wgint total) {
         // Reuse finished slots
         if (!bars[i]->active) {
             slot = i;
-            free(bars[i]->filename);
+            if (bars[i]->filename) free(bars[i]->filename);
+            if (bars[i]->filepath) free(bars[i]->filepath);
             free(bars[i]);
             bars[i] = bar;
             break;
@@ -361,6 +371,47 @@ void *tui_progress_create (const char *f_name, wgint initial, wgint total) {
     tui_progress_draw(bar);
 
     return bar;
+}
+
+// Create progress bar with checksum support
+void *tui_progress_create_with_checksum(const char *filename, const char *filepath, 
+                                         wgint initial, wgint total,
+                                         TuiChecksumType checksum_type, 
+                                         const char *expected_checksum) {
+    tui_debug("tui_progress_create_with_checksum: file=%s, path=%s, checksum_type=%d", 
+              filename, filepath ? filepath : "NULL", checksum_type);
+    
+    void *bar_ptr = tui_progress_create(filename, initial, total);
+    TuiProgress *bar = (TuiProgress *)bar_ptr;
+    
+    if (bar) {
+        pthread_mutex_lock(&tui_mutex);
+        bar->checksum_type = (ChecksumType)checksum_type;
+        if (filepath) {
+            bar->filepath = strdup(filepath);
+        }
+        if (expected_checksum && strlen(expected_checksum) > 0) {
+            strncpy(bar->expected_checksum, expected_checksum, 64);
+            bar->expected_checksum[64] = '\0';
+        }
+        pthread_mutex_unlock(&tui_mutex);
+    }
+    
+    return bar_ptr;
+}
+
+// Set filepath for checksum calculation
+void tui_progress_set_filepath(void *bar_ptr, const char *filepath) {
+    if (!bar_ptr || !filepath) return;
+    
+    pthread_mutex_lock(&tui_mutex);
+    TuiProgress *bar = (TuiProgress *)bar_ptr;
+    if (bar->filepath) {
+        free(bar->filepath);
+    }
+    bar->filepath = strdup(filepath);
+    tui_debug("tui_progress_set_filepath: id=%d, path=%s", bar->id, filepath);
+    pthread_mutex_unlock(&tui_mutex);
 }
 
 void tui_progress_draw (void *bar_ptr) {
@@ -390,6 +441,7 @@ void tui_progress_draw (void *bar_ptr) {
     if (has_colors()) wattroff(main_win, COLOR_PAIR(4) | A_BOLD);
 
     // Iterate over ALL bars to ensure they are all visible
+    // Each bar needs 4 rows
     for (int i = 0; i < bar_count; i++) {
         TuiProgress *bar = bars[i];
         if (bar == NULL) continue;
@@ -476,6 +528,55 @@ void tui_progress_finish (void *bar_ptr, double time_taken) {
     tui_progress_draw(bar);
 }
 
+// Finish with checksum calculation
+void tui_progress_finish_with_checksum(void *bar_ptr, double time_taken) {
+    TuiProgress *bar = (TuiProgress*)bar_ptr;
+    if (!bar) return;
+    
+    pthread_mutex_lock(&tui_mutex);
+    bar->active = false;
+    bar->current = bar->total;
+    pthread_mutex_unlock(&tui_mutex);
+    
+    // Force redraw to show "Done" immediately
+    tui_progress_draw(bar);
+    
+    // Calculate checksum if requested and filepath is available
+    if (bar->checksum_type != CHECKSUM_NONE && bar->filepath) {
+        tui_debug("tui_progress_finish_with_checksum: calculating checksum for %s", bar->filepath);
+        
+        bool success = calculate_checksum(bar->filepath, bar->checksum_type, bar->checksum);
+        
+        pthread_mutex_lock(&tui_mutex);
+        bar->checksum_calculated = success;
+        
+        if (success && bar->expected_checksum[0] != '\0') {
+            bar->checksum_verified = verify_checksum(bar->checksum, bar->expected_checksum);
+            tui_debug("tui_progress_finish_with_checksum: verification result=%d", bar->checksum_verified);
+        }
+        pthread_mutex_unlock(&tui_mutex);
+        
+        // Redraw to show checksum result
+        tui_progress_draw(bar);
+    }
+}
+
+// Get checksum string
+const char *tui_get_checksum(void *bar_ptr) {
+    TuiProgress *bar = (TuiProgress *)bar_ptr;
+    if (!bar || !bar->checksum_calculated) {
+        return NULL;
+    }
+    return bar->checksum;
+}
+
+// Check if checksum was verified successfully
+bool tui_is_checksum_verified(void *bar_ptr) {
+    TuiProgress *bar = (TuiProgress *)bar_ptr;
+    if (!bar) return false;
+    return bar->checksum_verified;
+}
+
 void tui_progress_set_params (const char *params) {
     // Not used
 }
@@ -507,6 +608,9 @@ void tui_cleanup(void) {
         if (bars[i]) {
             if (bars[i]->filename) {
                 free(bars[i]->filename);
+            }
+            if (bars[i]->filepath) {
+                free(bars[i]->filepath);
             }
             free(bars[i]);
             bars[i] = NULL;
@@ -542,19 +646,219 @@ void tui_wait_for_completion(void) {
     
     int height, width;
     getmaxyx(main_win, height, width);
+    pthread_mutex_unlock(&tui_mutex);
     
-    // Show completion message and wait for key press
+    // Ask user if they want to verify checksums
+    pthread_mutex_lock(&tui_mutex);
     if (has_colors()) wattron(main_win, COLOR_PAIR(2) | A_BOLD);
-    mvwprintw(main_win, height - 3, 2, "All downloads completed! Press any key to exit (auto-exit in 5s)...");
+    mvwprintw(main_win, height - 4, 2, "All downloads completed!");
     if (has_colors()) wattroff(main_win, COLOR_PAIR(2) | A_BOLD);
     
+    mvwprintw(main_win, height - 3, 2, "Do you want to verify checksums? [y/n]: ");
+    wclrtoeol(main_win);
     wrefresh(main_win);
     pthread_mutex_unlock(&tui_mutex);
     
-    // Set timeout of 5 seconds - auto exit if no key pressed
-    wtimeout(main_win, 5000);
+    // Wait for y/n response
+    wtimeout(main_win, -1); // No timeout for this question
     keypad(main_win, TRUE);
-    wgetch(main_win);
+    int ch = wgetch(main_win);
+    
+    if (ch == 'y' || ch == 'Y') {
+        // Create a new window for checksum verification
+        pthread_mutex_lock(&tui_mutex);
+        WINDOW *checksum_win = newwin(height - 2, width - 4, 1, 2);
+        box(checksum_win, 0, 0);
+        keypad(checksum_win, TRUE);
+        
+        if (has_colors()) wattron(checksum_win, COLOR_PAIR(4) | A_BOLD);
+        mvwprintw(checksum_win, 1, 2, " Checksum Verification ");
+        if (has_colors()) wattroff(checksum_win, COLOR_PAIR(4) | A_BOLD);
+        
+        // Ask for checksum type
+        mvwprintw(checksum_win, 3, 2, "Select checksum type:");
+        mvwprintw(checksum_win, 4, 4, "[1] MD5");
+        mvwprintw(checksum_win, 5, 4, "[2] SHA256");
+        mvwprintw(checksum_win, 6, 4, "[q] Skip verification");
+        wrefresh(checksum_win);
+        pthread_mutex_unlock(&tui_mutex);
+        
+        ch = wgetch(checksum_win);
+        ChecksumType selected_type = CHECKSUM_NONE;
+        const char *type_name = "";
+        
+        if (ch == '1') {
+            selected_type = CHECKSUM_MD5;
+            type_name = "MD5";
+        } else if (ch == '2') {
+            selected_type = CHECKSUM_SHA256;
+            type_name = "SHA256";
+        }
+        
+        if (selected_type != CHECKSUM_NONE) {
+            char input_buf[128] = {0};
+            int current_row = 8;
+            
+            // Process each downloaded file
+            pthread_mutex_lock(&tui_mutex);
+            for (int i = 0; i < bar_count; i++) {
+                TuiProgress *bar = bars[i];
+                if (!bar || !bar->filepath) continue;
+                
+                // Clear previous content
+                werase(checksum_win);
+                box(checksum_win, 0, 0);
+                
+                if (has_colors()) wattron(checksum_win, COLOR_PAIR(4) | A_BOLD);
+                mvwprintw(checksum_win, 1, 2, " Checksum Verification - %s ", type_name);
+                if (has_colors()) wattroff(checksum_win, COLOR_PAIR(4) | A_BOLD);
+                
+                // Show file info
+                mvwprintw(checksum_win, 3, 2, "File %d of %d:", i + 1, bar_count);
+                if (has_colors()) wattron(checksum_win, COLOR_PAIR(1));
+                mvwprintw(checksum_win, 4, 4, "Name: %s", bar->filename);
+                if (has_colors()) wattroff(checksum_win, COLOR_PAIR(1));
+                
+                // Calculate checksum
+                mvwprintw(checksum_win, 6, 2, "Calculating %s checksum...", type_name);
+                wrefresh(checksum_win);
+                pthread_mutex_unlock(&tui_mutex);
+                
+                bool calc_success = calculate_checksum(bar->filepath, selected_type, bar->checksum);
+                
+                pthread_mutex_lock(&tui_mutex);
+                bar->checksum_type = selected_type;
+                bar->checksum_calculated = calc_success;
+                
+                if (calc_success) {
+                    // Show calculated checksum
+                    mvwprintw(checksum_win, 6, 2, "Calculated %s:", type_name);
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(2));
+                    mvwprintw(checksum_win, 7, 4, "%.64s", bar->checksum);
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(2));
+                    
+                    // Ask for expected checksum
+                    mvwprintw(checksum_win, 9, 2, "Enter expected %s for '%s':", type_name, bar->filename);
+                    mvwprintw(checksum_win, 10, 2, "(Press Enter to skip, or paste checksum): ");
+                    wrefresh(checksum_win);
+                    
+                    // Enable echo for input
+                    echo();
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(3));
+                    wmove(checksum_win, 11, 4);
+                    wgetnstr(checksum_win, input_buf, 127);
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(3));
+                    noecho();
+                    
+                    // Verify if user entered a checksum
+                    if (strlen(input_buf) > 0) {
+                        strncpy(bar->expected_checksum, input_buf, 64);
+                        bar->expected_checksum[64] = '\0';
+                        bar->checksum_verified = verify_checksum(bar->checksum, bar->expected_checksum);
+                        
+                        // Show verification result
+                        if (bar->checksum_verified) {
+                            if (has_colors()) wattron(checksum_win, COLOR_PAIR(2) | A_BOLD);
+                            mvwprintw(checksum_win, 13, 4, "CHECKSUM VERIFIED - OK!");
+                            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(2) | A_BOLD);
+                        } else {
+                            if (has_colors()) wattron(checksum_win, COLOR_PAIR(5) | A_BOLD);
+                            mvwprintw(checksum_win, 13, 4, "CHECKSUM MISMATCH - FAILED!");
+                            mvwprintw(checksum_win, 14, 4, "Expected: %.64s", bar->expected_checksum);
+                            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(5) | A_BOLD);
+                        }
+                    } else {
+                        if (has_colors()) wattron(checksum_win, COLOR_PAIR(3));
+                        mvwprintw(checksum_win, 13, 4, "Skipped verification for this file.");
+                        if (has_colors()) wattroff(checksum_win, COLOR_PAIR(3));
+                    }
+                } else {
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(5));
+                    mvwprintw(checksum_win, 6, 2, "Failed to calculate checksum!");
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(5));
+                }
+                
+                // Wait for user to continue
+                mvwprintw(checksum_win, height - 5, 2, "Press any key to continue...");
+                wrefresh(checksum_win);
+                pthread_mutex_unlock(&tui_mutex);
+                
+                wgetch(checksum_win);
+                pthread_mutex_lock(&tui_mutex);
+            }
+            
+            // Show summary
+            werase(checksum_win);
+            box(checksum_win, 0, 0);
+            
+            if (has_colors()) wattron(checksum_win, COLOR_PAIR(4) | A_BOLD);
+            mvwprintw(checksum_win, 1, 2, " Checksum Verification Summary ");
+            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(4) | A_BOLD);
+            
+            int verified_count = 0;
+            int failed_count = 0;
+            int skipped_count = 0;
+            
+            current_row = 3;
+            for (int i = 0; i < bar_count; i++) {
+                TuiProgress *bar = bars[i];
+                if (!bar) continue;
+                
+                mvwprintw(checksum_win, current_row, 2, "%d. %s: ", i + 1, bar->filename);
+                
+                if (!bar->checksum_calculated) {
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(5));
+                    wprintw(checksum_win, "CALC FAILED");
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(5));
+                    failed_count++;
+                } else if (bar->expected_checksum[0] == '\0') {
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(3));
+                    wprintw(checksum_win, "SKIPPED");
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(3));
+                    skipped_count++;
+                } else if (bar->checksum_verified) {
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(2) | A_BOLD);
+                    wprintw(checksum_win, "VERIFIED");
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(2) | A_BOLD);
+                    verified_count++;
+                } else {
+                    if (has_colors()) wattron(checksum_win, COLOR_PAIR(5) | A_BOLD);
+                    wprintw(checksum_win, "MISMATCH");
+                    if (has_colors()) wattroff(checksum_win, COLOR_PAIR(5) | A_BOLD);
+                    failed_count++;
+                }
+                current_row++;
+            }
+            
+            current_row += 2;
+            mvwprintw(checksum_win, current_row, 2, "Summary: ");
+            if (has_colors()) wattron(checksum_win, COLOR_PAIR(2));
+            wprintw(checksum_win, "%d verified", verified_count);
+            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(2));
+            wprintw(checksum_win, ", ");
+            if (has_colors()) wattron(checksum_win, COLOR_PAIR(5));
+            wprintw(checksum_win, "%d failed", failed_count);
+            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(5));
+            wprintw(checksum_win, ", ");
+            if (has_colors()) wattron(checksum_win, COLOR_PAIR(3));
+            wprintw(checksum_win, "%d skipped", skipped_count);
+            if (has_colors()) wattroff(checksum_win, COLOR_PAIR(3));
+            
+            mvwprintw(checksum_win, height - 5, 2, "Press any key to exit...");
+            wrefresh(checksum_win);
+            pthread_mutex_unlock(&tui_mutex);
+            
+            wgetch(checksum_win);
+            
+            pthread_mutex_lock(&tui_mutex);
+            delwin(checksum_win);
+            pthread_mutex_unlock(&tui_mutex);
+        } else {
+            pthread_mutex_lock(&tui_mutex);
+            delwin(checksum_win);
+            pthread_mutex_unlock(&tui_mutex);
+        }
+    }
     
     // Cleanup TUI
     tui_cleanup();
