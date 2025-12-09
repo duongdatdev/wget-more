@@ -36,6 +36,18 @@ void tui_cleanup(void);
 void tui_wait_for_completion(void);
 int tui_get_active_count(void);
 
+// Register completed/merged file for checksum verification
+void tui_register_completed_file(const char *filename, const char *filepath);
+int tui_get_completed_file_count(void);
+
+// Pause and Cancel control
+bool tui_is_paused(void);
+bool tui_is_cancelled(void);
+void tui_set_paused(bool paused);
+void tui_set_cancelled(bool cancelled);
+void tui_start_input_handler(void);
+void tui_stop_input_handler(void);
+
 // Checksum utility functions
 const char *tui_get_checksum(void *bar_ptr);
 bool tui_is_checksum_verified(void *bar_ptr);

@@ -396,6 +396,24 @@ fd_read_body (const char *downloaded_filename, int fd, FILE *out, wgint toread, 
       int rdsize;
       double tmout = opt.read_timeout;
 
+      /* Check for TUI pause/cancel */
+      if (opt.tui)
+        {
+          /* Wait while paused */
+          while (tui_is_paused() && !tui_is_cancelled())
+            {
+              usleep(100000);  /* 100ms sleep while paused */
+            }
+          
+          /* Check if cancelled */
+          if (tui_is_cancelled())
+            {
+              ret = -1;
+              errno = EINTR;
+              break;
+            }
+        }
+
       if (chunked)
         {
           if (remaining_chunk_size == 0)
@@ -1089,6 +1107,13 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
           struct stat st;
           if (stat(local_file, &st) == 0 && st.st_size > 0) {
               file_downloaded = true;
+              /* Register completed file for TUI checksum (single-thread download) */
+              if (opt.tui && result == RETROK) {
+                  const char *fname = strrchr(local_file, '/');
+                  fname = fname ? fname + 1 : local_file;
+                  tui_register_completed_file(fname, local_file);
+                  retr_debug("Registered single-thread completed file: %s -> %s", fname, local_file);
+              }
           }
       }
 
@@ -1098,6 +1123,11 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
           opt.dns_cache = false;
           retr_debug("Starting multipart download: connections=%d, total_size=%lld, tui=%d", 
                      opt.connections, (long long)total_size, opt.tui);
+          
+          /* Start TUI input handler for pause/cancel */
+          if (opt.tui)
+            tui_start_input_handler();
+            
 #ifdef HAVE_PTHREAD_H
           int i;
           int launched = 0;
@@ -1144,6 +1174,26 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
 
               for (i = 0; i < launched; i++)
                 {
+                  /* Check if user cancelled download */
+                  if (opt.tui && tui_is_cancelled())
+                    {
+                      logprintf (LOG_NOTQUIET, _("Download cancelled by user\n"));
+                      /* Cancel all threads */
+                      for (int j = i; j < launched; j++)
+                        {
+                          pthread_cancel(threads[j]);
+                          pthread_join(threads[j], NULL);
+                        }
+                      any_failed = true;
+                      break;
+                    }
+                  
+                  /* Wait while paused */
+                  while (opt.tui && tui_is_paused() && !tui_is_cancelled())
+                    {
+                      usleep(100000);  /* 100ms sleep while paused */
+                    }
+                  
                   /* Use timed join with 5 minute timeout to prevent infinite hangs */
                   struct timespec timeout;
                   clock_gettime(CLOCK_REALTIME, &timeout);
@@ -1168,6 +1218,10 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
                   if (jobs[i].proxy_url) url_free(jobs[i].proxy_url);
                   iri_free(jobs[i].iri);
                 }
+              
+              /* Stop input handler after threads finish */
+              if (opt.tui)
+                tui_stop_input_handler();
 
               if (!any_failed)
                 {
@@ -1193,6 +1247,16 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
                             }
                         }
                       fclose (fp_out);
+                      
+                      /* Register merged file for checksum verification in TUI mode */
+                      if (opt.tui && !any_failed)
+                        {
+                          /* Extract filename from local_file path */
+                          const char *fname = strrchr(local_file, '/');
+                          fname = fname ? fname + 1 : local_file;
+                          tui_register_completed_file(fname, local_file);
+                          retr_debug("Registered completed file: %s -> %s", fname, local_file);
+                        }
                     }
                   else
                     {

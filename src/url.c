@@ -624,8 +624,7 @@ maybe_prepend_scheme (const char *url)
   if (p && p[0] == ':' && !is_valid_port (p + 1))
     return NULL;
 
-
-  fprintf(stderr, "Prepended http:// to '%s'\n", url);
+  /* Debug message removed - was causing issues with TUI mode */
   return aprintf ("http://%s", url);
 }
 
