@@ -742,6 +742,9 @@ int tui_get_active_count(void) {
 }
 
 void tui_cleanup(void) {
+    // Stop input handler first (before acquiring mutex to avoid deadlock)
+    tui_stop_input_handler();
+    
     pthread_mutex_lock(&tui_mutex);
     
     // Free all progress bars

@@ -7,6 +7,7 @@
 *   **Giao diện TUI trực quan**: Giao diện đồ họa trên nền terminal, dễ sử dụng hơn so với dòng lệnh truyền thống.
 *   **Tải xuống hàng loạt (Batch Download)**: Hỗ trợ nhập và quản lý danh sách nhiều URL để tải xuống lần lượt.
 *   **Hiển thị tiến trình sinh động**: Thanh tiến trình (Progress bar) với màu sắc, hiển thị tốc độ và phần trăm hoàn thành theo thời gian thực.
+*   **Tạm dừng/Hủy tải xuống**: Cho phép tạm dừng, tiếp tục hoặc hủy quá trình tải xuống bất cứ lúc nào.
 *   **Kiểm tra Checksum**: Tích hợp tính năng xác thực mã băm **SHA256** để đảm bảo tính toàn vẹn của file sau khi tải về.
 
 ## 🛠 Yêu cầu hệ thống
@@ -54,6 +55,9 @@ Sau khi biên dịch thành công, file thực thi chính sẽ nằm trong thư 
     *   **Add**: Thêm URL vào danh sách chờ tải.
     *   **Download**: Bắt đầu tải xuống tất cả các file trong danh sách.
     *   **Điều hướng**: Sử dụng phím `Tab` hoặc các phím mũi tên để di chuyển giữa các trường nhập liệu và nút bấm. `Enter` để chọn.
+    *   **Điều khiển tải xuống**:
+        *   `P`: Tạm dừng / Tiếp tục (Pause/Resume).
+        *   `C` hoặc `Esc`: Hủy tải xuống (Cancel).
 
 ## 📂 Cấu trúc thư mục chính
 

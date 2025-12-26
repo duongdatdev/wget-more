@@ -1219,9 +1219,10 @@ retrieve_url (struct url * orig_parsed, const char *origurl, char **file,
                   iri_free(jobs[i].iri);
                 }
               
-              /* Stop input handler after threads finish */
-              if (opt.tui)
-                tui_stop_input_handler();
+              /* NOTE: Do NOT stop input handler here between files.
+                 The input handler should remain running when downloading 
+                 multiple files sequentially with connections option.
+                 It will be stopped by tui_cleanup() when all downloads complete. */
 
               if (!any_failed)
                 {
