@@ -27,6 +27,10 @@ static volatile bool tui_cancelled = false;
 static pthread_t input_thread;
 static volatile bool input_thread_running = false;
 
+// Scroll state for progress bar list
+static volatile int scroll_offset = 0;
+static int visible_bars = 0;  // Number of bars that can fit on screen
+
 // Debug logging function
 static void tui_debug(const char *fmt, ...) {
     if (!debug_log) {
@@ -87,6 +91,9 @@ void tui_set_cancelled(bool cancelled) {
     tui_cancelled = cancelled;
 }
 
+// Forward declare bar_count for use in input handler
+static int bar_count;
+
 // Input handler thread function
 static void *tui_input_handler(void *arg) {
     (void)arg;
@@ -109,6 +116,22 @@ static void *tui_input_handler(void *arg) {
                     case 27:  // ESC
                         tui_cancelled = true;
                         tui_paused = false;  // Unpause to allow cleanup
+                        break;
+                    case 'j':
+                    case 'J':
+                    case KEY_DOWN:
+                        // Scroll down
+                        if (bar_count > visible_bars && scroll_offset < bar_count - visible_bars) {
+                            scroll_offset++;
+                        }
+                        break;
+                    case 'k':
+                    case 'K':
+                    case KEY_UP:
+                        // Scroll up
+                        if (scroll_offset > 0) {
+                            scroll_offset--;
+                        }
                         break;
                 }
             }
@@ -154,7 +177,6 @@ typedef struct {
 } TuiProgress;
 
 static TuiProgress **bars = NULL;
-static int bar_count = 0;
 
 static void tui_cleanup_handler(void) {
     if (tui_initialized) {
@@ -544,6 +566,12 @@ void tui_progress_draw (void *bar_ptr) {
     int height, width;
     getmaxyx(main_win, height, width);
 
+    // Calculate how many bars can fit on screen
+    // Each bar needs 4 rows, header takes 3 rows (0-2), footer takes 2 rows
+    int available_rows = height - 5;  // header (3) + footer (2)
+    visible_bars = available_rows / 4;
+    if (visible_bars < 1) visible_bars = 1;
+
     // Count actually active downloads
     int active_count = 0;
     for (int i = 0; i < bar_count; i++) {
@@ -551,6 +579,14 @@ void tui_progress_draw (void *bar_ptr) {
             active_count++;
         }
     }
+
+    // Adjust scroll offset if needed (e.g., if items were removed)
+    if (bar_count <= visible_bars) {
+        scroll_offset = 0;
+    } else if (scroll_offset > bar_count - visible_bars) {
+        scroll_offset = bar_count - visible_bars;
+    }
+    if (scroll_offset < 0) scroll_offset = 0;
 
     // Redraw header to ensure it persists
     box(main_win, 0, 0);
@@ -570,28 +606,45 @@ void tui_progress_draw (void *bar_ptr) {
         mvwprintw(main_win, 1, 2, " GNU Wget - TUI Downloader (Active: %d) ", active_count);
     }
     if (has_colors()) wattroff(main_win, COLOR_PAIR(4) | A_BOLD);
+
+    // Show scroll indicator in header if scrolling is possible
+    if (bar_count > visible_bars) {
+        int first_shown = scroll_offset + 1;
+        int last_shown = scroll_offset + visible_bars;
+        if (last_shown > bar_count) last_shown = bar_count;
+        
+        if (has_colors()) wattron(main_win, COLOR_PAIR(1));
+        mvwprintw(main_win, 1, width - 25, "[%d-%d of %d]", first_shown, last_shown, bar_count);
+        if (has_colors()) wattroff(main_win, COLOR_PAIR(1));
+    }
     
     // Show key hints at bottom
     if (has_colors()) wattron(main_win, COLOR_PAIR(5));
     mvwhline(main_win, height - 2, 1, ' ', width - 2);
     if (tui_paused) {
-        mvwprintw(main_win, height - 2, 2, "[P] Resume  [C/ESC] Cancel Download");
+        mvwprintw(main_win, height - 2, 2, "[P] Resume  [C/ESC] Cancel");
     } else {
-        mvwprintw(main_win, height - 2, 2, "[P] Pause   [C/ESC] Cancel Download");
+        mvwprintw(main_win, height - 2, 2, "[P] Pause   [C/ESC] Cancel");
+    }
+    // Show scroll hints if scrolling is possible
+    if (bar_count > visible_bars) {
+        mvwprintw(main_win, height - 2, 32, "[J/Down] Scroll Down  [K/Up] Scroll Up");
     }
     if (has_colors()) wattroff(main_win, COLOR_PAIR(5));
 
-    // Iterate over ALL bars to ensure they are all visible
-    // Each bar needs 4 rows
-    for (int i = 0; i < bar_count; i++) {
+    // Clear all bar areas first
+    for (int row = 3; row < height - 2; row++) {
+        mvwhline(main_win, row, 1, ' ', width - 2);
+    }
+
+    // Draw bars based on scroll offset
+    int display_index = 0;  // Position on screen (0, 1, 2, ...)
+    for (int i = scroll_offset; i < bar_count && display_index < visible_bars; i++) {
         TuiProgress *bar = bars[i];
         if (bar == NULL) continue;
 
-        int row = 3 + (bar->id * 4);
-        if (row + 3 >= height) continue;
-
-        // Clear area for this bar
-        for(int k=0; k<3; k++) mvwhline(main_win, row+k, 1, ' ', width-2);
+        int row = 3 + (display_index * 4);
+        if (row + 3 >= height - 2) break;  // Don't overwrite footer
 
         mvwprintw(main_win, row, 2, "File: %s (ID: %d)", bar->filename, bar->id);
 
@@ -601,6 +654,7 @@ void tui_progress_draw (void *bar_ptr) {
             mvwprintw(main_win, row + 1, 2, "[ DONE ]");
             mvwprintw(main_win, row + 2, 2, "Download Complete");
             if (has_colors()) wattroff(main_win, COLOR_PAIR(2) | A_BOLD);
+            display_index++;
             continue;
         }
 
@@ -639,11 +693,14 @@ void tui_progress_draw (void *bar_ptr) {
             mvwprintw(main_win, row + 2, 40, "ETA: %02d:%02d:%02d", h, m, s);
         }
         if (has_colors()) wattroff(main_win, COLOR_PAIR(1));
+        
+        display_index++;
     }
 
     wrefresh(main_win);
     pthread_mutex_unlock(&tui_mutex);
 }
+
 
 void tui_progress_update (void *bar_ptr, wgint howmuch, double time_taken) {
     pthread_mutex_lock(&tui_mutex);
@@ -765,6 +822,10 @@ void tui_cleanup(void) {
         bars = NULL;
     }
     bar_count = 0;
+    
+    // Reset scroll state
+    scroll_offset = 0;
+    visible_bars = 0;
     
     // Free completed files list
     for (int i = 0; i < completed_file_count; i++) {
